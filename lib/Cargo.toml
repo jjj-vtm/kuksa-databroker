@@ -19,3 +19,6 @@ tokio = "1.17.0"
 tokio-stream = "0.1.8"
 tonic = { version = "0.11.0", default-features = false }
 tonic-build = { version = "0.8", default-features = false }
+
+[profile.release]
+debug = true

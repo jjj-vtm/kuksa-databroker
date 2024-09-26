@@ -17,6 +17,7 @@ pub use crate::types;
 use crate::query;
 pub use crate::types::{ChangeType, DataType, DataValue, EntryType};
 
+use tinyset::{Fits64, Set64};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
@@ -85,11 +86,26 @@ pub struct Entry {
     pub metadata: Metadata,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum Field {
-    Datapoint,
-    ActuatorTarget,
-    MetadataUnit,
+    Datapoint = 0,
+    ActuatorTarget = 1,
+    MetadataUnit = 2,
+}
+
+impl Fits64 for Field {
+    unsafe fn from_u64(x: u64) -> Self {
+        match x {
+            0 => Field::Datapoint,
+            1 => Field::ActuatorTarget,
+            2 => Field::MetadataUnit,
+            _ => Field::Datapoint 
+        }
+    }
+
+    fn to_u64(self) -> u64 {
+        self as u64
+    }
 }
 
 #[derive(Default)]
@@ -568,8 +584,8 @@ impl Entry {
         self.lag_datapoint = self.datapoint.clone();
     }
 
-    pub fn apply(&mut self, update: EntryUpdate) -> HashSet<Field> {
-        let mut changed = HashSet::new();
+    pub fn apply(&mut self, update: EntryUpdate) -> Set64<Field> {
+        let mut changed = Set64::new();
         if let Some(datapoint) = update.datapoint {
             self.lag_datapoint = self.datapoint.clone();
             self.datapoint = datapoint;
@@ -609,7 +625,7 @@ impl Subscriptions {
 
     pub async fn notify(
         &self,
-        changed: Option<&HashMap<i32, HashSet<Field>>>,
+        changed: Option<&HashMap<i32, Set64<Field>>>,
         db: &Database,
     ) -> Result<Option<HashMap<String, ()>>, NotificationError> {
         let mut error = None;
@@ -685,114 +701,99 @@ impl Subscriptions {
 impl ChangeSubscription {
     async fn notify(
         &self,
-        changed: Option<&HashMap<i32, HashSet<Field>>>,
+        changed: Option<&HashMap<i32, Set64<Field>>>,
         db: &Database,
     ) -> Result<(), NotificationError> {
         let db_read = db.authorized_read_access(&self.permissions);
-        match changed {
-            Some(changed) => {
-                let mut matches = false;
+        if let Some(changed) = changed {
+            // notify
+            let notifications = {
+                let mut notifications = EntryUpdates::default();
                 for (id, changed_fields) in changed {
                     if let Some(fields) = self.entries.get(id) {
-                        if !fields.is_disjoint(changed_fields) {
-                            matches = true;
-                            break;
-                        }
-                    }
-                }
-                if matches {
-                    // notify
-                    let notifications = {
-                        let mut notifications = EntryUpdates::default();
-                        for (id, changed_fields) in changed {
-                            if let Some(fields) = self.entries.get(id) {
-                                if !fields.is_disjoint(changed_fields) {
-                                    match db_read.get_entry_by_id(*id) {
-                                        Ok(entry) => {
-                                            let mut update = EntryUpdate::default();
-                                            let mut notify_fields = HashSet::new();
-                                            // TODO: Perhaps make path optional
-                                            update.path = Some(entry.metadata.path.clone());
-                                            if changed_fields.contains(&Field::Datapoint)
-                                                && fields.contains(&Field::Datapoint)
-                                            {
-                                                update.datapoint = Some(entry.datapoint.clone());
-                                                notify_fields.insert(Field::Datapoint);
-                                            }
-                                            if changed_fields.contains(&Field::ActuatorTarget)
-                                                && fields.contains(&Field::ActuatorTarget)
-                                            {
-                                                update.actuator_target =
-                                                    Some(entry.actuator_target.clone());
-                                                notify_fields.insert(Field::ActuatorTarget);
-                                            }
-                                            // fill unit field always
-                                            update.unit.clone_from(&entry.metadata.unit);
-                                            notifications.updates.push(ChangeNotification {
-                                                update,
-                                                fields: notify_fields,
-                                            });
-                                        }
-                                        Err(ReadError::PermissionExpired) => {
-                                            debug!("notify: token expired, closing subscription channel");
-                                            return Err(NotificationError {});
-                                        }
-                                        Err(_) => {
-                                            debug!("notify: could not find entry with id {}", id);
-                                        }
+                        let not_disjoint = fields.iter().any(|x|changed_fields.contains(*x));
+                        if not_disjoint {
+                            match db_read.get_entry_by_id(*id) {
+                                Ok(entry) => {
+                                    let mut update = EntryUpdate::default();
+                                    let mut notify_fields = HashSet::new();
+                                    // TODO: Perhaps make path optional
+                                    update.path = Some(entry.metadata.path.clone());
+                                    if changed_fields.contains(&Field::Datapoint)
+                                        && fields.contains(&Field::Datapoint)
+                                    {
+                                        update.datapoint = Some(entry.datapoint.clone());
+                                        notify_fields.insert(Field::Datapoint);
                                     }
+                                    if changed_fields.contains(&Field::ActuatorTarget)
+                                        && fields.contains(&Field::ActuatorTarget)
+                                    {
+                                        update.actuator_target =
+                                            Some(entry.actuator_target.clone());
+                                        notify_fields.insert(Field::ActuatorTarget);
+                                    }
+                                    // fill unit field always
+                                    update.unit.clone_from(&entry.metadata.unit);
+                                    notifications.updates.push(ChangeNotification {
+                                        update,
+                                        fields: notify_fields,
+                                    });
+                                }
+                                Err(ReadError::PermissionExpired) => {
+                                    debug!("notify: token expired, closing subscription channel");
+                                    return Err(NotificationError {});
+                                }
+                                Err(_) => {
+                                    debug!("notify: could not find entry with id {}", id);
                                 }
                             }
                         }
-                        notifications
-                    };
-                    if notifications.updates.is_empty() {
-                        Ok(())
-                    } else {
-                        match self.sender.send(notifications).await {
-                            Ok(()) => Ok(()),
-                            Err(_) => Err(NotificationError {}),
-                        }
                     }
-                } else {
-                    Ok(())
                 }
-            }
-            None => {
-                let notifications = {
-                    let mut notifications = EntryUpdates::default();
-
-                    for (id, fields) in &self.entries {
-                        match db_read.get_entry_by_id(*id) {
-                            Ok(entry) => {
-                                let mut update = EntryUpdate::default();
-                                let mut notify_fields = HashSet::new();
-                                // TODO: Perhaps make path optional
-                                update.path = Some(entry.metadata.path.clone());
-                                if fields.contains(&Field::Datapoint) {
-                                    update.datapoint = Some(entry.datapoint.clone());
-                                    notify_fields.insert(Field::Datapoint);
-                                }
-                                if fields.contains(&Field::ActuatorTarget) {
-                                    update.actuator_target = Some(entry.actuator_target.clone());
-                                    notify_fields.insert(Field::ActuatorTarget);
-                                }
-                                notifications.updates.push(ChangeNotification {
-                                    update,
-                                    fields: notify_fields,
-                                });
-                            }
-                            Err(_) => {
-                                debug!("notify: could not find entry with id {}", id)
-                            }
-                        }
-                    }
-                    notifications
-                };
+                notifications
+            };
+            if notifications.updates.is_empty() {
+                Ok(())
+            } else {
                 match self.sender.send(notifications).await {
                     Ok(()) => Ok(()),
                     Err(_) => Err(NotificationError {}),
                 }
+            }
+        } else {
+            let notifications = {
+                let mut notifications = EntryUpdates::default();
+
+                for (id, fields) in &self.entries {
+                    match db_read.get_entry_by_id(*id) {
+                        Ok(entry) => {
+                            let mut update = EntryUpdate::default();
+                            let mut notify_fields = HashSet::new();
+                            // TODO: Perhaps make path optional
+                            update.path = Some(entry.metadata.path.clone());
+                            if fields.contains(&Field::Datapoint) {
+                                update.datapoint = Some(entry.datapoint.clone());
+                                notify_fields.insert(Field::Datapoint);
+                            }
+                            if fields.contains(&Field::ActuatorTarget) {
+                                update.actuator_target = Some(entry.actuator_target.clone());
+                                notify_fields.insert(Field::ActuatorTarget);
+                            }
+                            notifications.updates.push(ChangeNotification {
+                                update,
+                                fields: notify_fields,
+                            });
+                        }
+                        Err(_) => {
+                            debug!("notify: could not find entry with id {}", id)
+                        }
+                    }
+                }
+                notifications
+            };
+            match self.sender.send(notifications).await {
+                Ok(()) => Ok(()),
+                Err(_) => Err(NotificationError {}),
             }
         }
     }
@@ -829,7 +830,7 @@ impl QuerySubscription {
     }
     fn check_if_changes_match(
         query: &CompiledQuery,
-        changed_origin: Option<&HashMap<i32, HashSet<Field>>>,
+        changed_origin: Option<&HashMap<i32, Set64<Field>>>,
         db: &DatabaseReadAccess,
     ) -> bool {
         match changed_origin {
@@ -879,7 +880,7 @@ impl QuerySubscription {
     }
     fn generate_input(
         &self,
-        changed: Option<&HashMap<i32, HashSet<Field>>>,
+        changed: Option<&HashMap<i32, Set64<Field>>>,
         db: &DatabaseReadAccess,
     ) -> Option<impl ExecutionInput> {
         let id_used_in_query = QuerySubscription::check_if_changes_match(&self.query, changed, db);
@@ -895,7 +896,7 @@ impl QuerySubscription {
 
     async fn notify(
         &self,
-        changed: Option<&HashMap<i32, HashSet<Field>>>,
+        changed: Option<&HashMap<i32, Set64<Field>>>,
         db: &Database,
     ) -> Result<Option<impl query::ExecutionInput>, NotificationError> {
         let db_read = db.authorized_read_access(&self.permissions);
@@ -1048,7 +1049,7 @@ impl<'a, 'b> DatabaseWriteAccess<'a, 'b> {
         &mut self,
         path: &str,
         update: EntryUpdate,
-    ) -> Result<HashSet<Field>, UpdateError> {
+    ) -> Result<Set64<Field>, UpdateError> {
         match self.db.path_to_id.get(path) {
             Some(id) => self.update(*id, update),
             None => Err(UpdateError::NotFound),
@@ -1068,7 +1069,7 @@ impl<'a, 'b> DatabaseWriteAccess<'a, 'b> {
         }
     }
 
-    pub fn update(&mut self, id: i32, update: EntryUpdate) -> Result<HashSet<Field>, UpdateError> {
+    pub fn update(&mut self, id: i32, update: EntryUpdate) -> Result<Set64<Field>, UpdateError> {
         match self.db.entries.get_mut(&id) {
             Some(entry) => {
                 if update.path.is_some()
@@ -1401,7 +1402,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
 
         let cleanup_needed = {
             let changed = {
-                let mut changed = HashMap::<i32, HashSet<Field>>::new();
+                let mut changed = HashMap::<i32, tinyset::Set64<Field>>::new();
                 for (id, update) in updates {
                     debug!("setting id {} to {:?}", id, update);
                     match db_write.update(id, update) {
