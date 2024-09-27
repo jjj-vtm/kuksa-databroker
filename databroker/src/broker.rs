@@ -93,13 +93,65 @@ pub enum Field {
     MetadataUnit = 2,
 }
 
+#[derive(Clone, Copy)]
+
+pub struct SimpleSet {
+    repr: u8,
+}
+
+impl SimpleSet {
+    pub fn new() -> Self {
+        Self{repr: 0}
+    }
+
+    pub fn insert(&mut self, value: Field) {
+        match value {
+            Field::Datapoint => {
+                self.repr |= 0b0000_0001;
+            }
+            Field::ActuatorTarget => {
+                self.repr |= 0b0000_0010;
+            }
+            Field::MetadataUnit => {
+                self.repr |= 0b0000_0100; 
+            }
+        }
+    }
+
+    pub fn insertAll(&mut self, value: SimpleSet) {
+            self.repr |= value.repr;
+    }
+
+    pub fn contains(&self, value: &Field) -> bool {
+        match value {
+            Field::Datapoint => {
+                (self.repr & 0b0000_0001) == 0b0000_0001
+            }
+            Field::ActuatorTarget => {
+                (self.repr & 0b0000_0001) == 0b0000_0010
+            }
+            Field::MetadataUnit => {
+                (self.repr & 0b0000_0001) == 0b0000_0100 
+            }
+        }
+    }
+
+    fn is_disjoint(&self, other: &SimpleSet) -> bool {
+        !((self.repr & other.repr) == self.repr)
+    }
+    
+    fn is_empty(&self) -> bool {
+        self.repr == 0
+    }
+}
+
 impl Fits64 for Field {
     unsafe fn from_u64(x: u64) -> Self {
         match x {
             0 => Field::Datapoint,
             1 => Field::ActuatorTarget,
             2 => Field::MetadataUnit,
-            _ => Field::Datapoint 
+            _ => Field::Datapoint,
         }
     }
 
@@ -171,7 +223,7 @@ pub struct QuerySubscription {
 }
 
 pub struct ChangeSubscription {
-    entries: HashMap<i32, HashSet<Field>>,
+    entries: HashMap<i32, SimpleSet>,
     sender: mpsc::Sender<EntryUpdates>,
     permissions: Permissions,
 }
@@ -202,7 +254,7 @@ pub struct EntryUpdate {
 }
 
 impl Entry {
-    pub fn diff(&self, mut update: EntryUpdate) -> EntryUpdate {
+    pub fn diff(&self, update: &mut EntryUpdate) {
         if let Some(datapoint) = &update.datapoint {
             if self.metadata.change_type != ChangeType::Continuous {
                 // TODO: Compare timestamps as well?
@@ -217,8 +269,6 @@ impl Entry {
         //                     .data_type
         //                     .description
         //                     .allowed
-
-        update
     }
 
     pub fn validate(&self, update: &EntryUpdate) -> Result<(), UpdateError> {
@@ -584,8 +634,8 @@ impl Entry {
         self.lag_datapoint = self.datapoint.clone();
     }
 
-    pub fn apply(&mut self, update: EntryUpdate) -> Set64<Field> {
-        let mut changed = Set64::new();
+    pub fn apply(&mut self, update: EntryUpdate) -> SimpleSet{
+        let mut changed = SimpleSet { repr: 0};
         if let Some(datapoint) = update.datapoint {
             self.lag_datapoint = self.datapoint.clone();
             self.datapoint = datapoint;
@@ -625,7 +675,7 @@ impl Subscriptions {
 
     pub async fn notify(
         &self,
-        changed: Option<&HashMap<i32, Set64<Field>>>,
+        changed: Option<&HashMap<i32, SimpleSet>>,
         db: &Database,
     ) -> Result<Option<HashMap<String, ()>>, NotificationError> {
         let mut error = None;
@@ -701,7 +751,7 @@ impl Subscriptions {
 impl ChangeSubscription {
     async fn notify(
         &self,
-        changed: Option<&HashMap<i32, Set64<Field>>>,
+        changed: Option<&HashMap<i32, SimpleSet>>,
         db: &Database,
     ) -> Result<(), NotificationError> {
         let db_read = db.authorized_read_access(&self.permissions);
@@ -711,8 +761,8 @@ impl ChangeSubscription {
                 let mut notifications = EntryUpdates::default();
                 for (id, changed_fields) in changed {
                     if let Some(fields) = self.entries.get(id) {
-                        let not_disjoint = fields.iter().any(|x|changed_fields.contains(*x));
-                        if not_disjoint {
+                    
+                        if !fields.is_disjoint(changed_fields) {
                             match db_read.get_entry_by_id(*id) {
                                 Ok(entry) => {
                                     let mut update = EntryUpdate::default();
@@ -830,7 +880,7 @@ impl QuerySubscription {
     }
     fn check_if_changes_match(
         query: &CompiledQuery,
-        changed_origin: Option<&HashMap<i32, Set64<Field>>>,
+        changed_origin: Option<&HashMap<i32, SimpleSet>>,
         db: &DatabaseReadAccess,
     ) -> bool {
         match changed_origin {
@@ -880,7 +930,7 @@ impl QuerySubscription {
     }
     fn generate_input(
         &self,
-        changed: Option<&HashMap<i32, Set64<Field>>>,
+        changed: Option<&HashMap<i32, SimpleSet>>,
         db: &DatabaseReadAccess,
     ) -> Option<impl ExecutionInput> {
         let id_used_in_query = QuerySubscription::check_if_changes_match(&self.query, changed, db);
@@ -896,7 +946,7 @@ impl QuerySubscription {
 
     async fn notify(
         &self,
-        changed: Option<&HashMap<i32, Set64<Field>>>,
+        changed: Option<&HashMap<i32, SimpleSet>>,
         db: &Database,
     ) -> Result<Option<impl query::ExecutionInput>, NotificationError> {
         let db_read = db.authorized_read_access(&self.permissions);
@@ -1049,7 +1099,7 @@ impl<'a, 'b> DatabaseWriteAccess<'a, 'b> {
         &mut self,
         path: &str,
         update: EntryUpdate,
-    ) -> Result<Set64<Field>, UpdateError> {
+    ) -> Result<SimpleSet, UpdateError> {
         match self.db.path_to_id.get(path) {
             Some(id) => self.update(*id, update),
             None => Err(UpdateError::NotFound),
@@ -1069,7 +1119,11 @@ impl<'a, 'b> DatabaseWriteAccess<'a, 'b> {
         }
     }
 
-    pub fn update(&mut self, id: i32, update: EntryUpdate) -> Result<Set64<Field>, UpdateError> {
+    pub fn update(
+        &mut self,
+        id: i32,
+        mut update: EntryUpdate,
+    ) -> Result<SimpleSet, UpdateError> {
         match self.db.entries.get_mut(&id) {
             Some(entry) => {
                 if update.path.is_some()
@@ -1109,7 +1163,7 @@ impl<'a, 'b> DatabaseWriteAccess<'a, 'b> {
                 }
 
                 // Reduce update to only include changes
-                let update = entry.diff(update);
+                entry.diff(&mut update);
                 // Validate update
                 match entry.validate(&update) {
                     Ok(_) => {
@@ -1402,7 +1456,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
 
         let cleanup_needed = {
             let changed = {
-                let mut changed = HashMap::<i32, tinyset::Set64<Field>>::new();
+                let mut changed = HashMap::<i32, SimpleSet>::new();
                 for (id, update) in updates {
                     debug!("setting id {} to {:?}", id, update);
                     match db_write.update(id, update) {
@@ -1464,7 +1518,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
 
     pub async fn subscribe(
         &self,
-        valid_entries: HashMap<i32, HashSet<Field>>,
+        valid_entries: HashMap<i32, SimpleSet>,
     ) -> Result<impl Stream<Item = EntryUpdates>, SubscriptionError> {
         if valid_entries.is_empty() {
             return Err(SubscriptionError::InvalidInput);
@@ -2992,8 +3046,11 @@ mod tests {
             .await
             .expect("Register datapoint should succeed");
 
+        let mut fieldWithDP = SimpleSet::new();
+        fieldWithDP.insert(Field::Datapoint);
+
         let mut stream = broker
-            .subscribe(HashMap::from([(id1, HashSet::from([Field::Datapoint]))]))
+            .subscribe(HashMap::from([(id1, fieldWithDP)]))
             .await
             .expect("subscription should succeed");
 

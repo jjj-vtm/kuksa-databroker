@@ -21,7 +21,7 @@ use std::{
 
 #[tokio::main]
 async fn main() -> () {
-    let parallel = 10;
+    let parallel = 25;
     let path = "Vehicle.Speed";
     let mut clients: Vec<KuksaClient> = vec![];
 
