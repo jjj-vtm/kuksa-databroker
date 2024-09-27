@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::iter::FromIterator;
 use std::pin::Pin;
+use enumset::EnumSet;
 use tokio::select;
 use tokio::sync::mpsc;
 
@@ -493,7 +494,7 @@ impl proto::val_server::Val for broker::DataBroker {
             ));
         }
 
-        let mut valid_requests: HashMap<String, (Matcher, broker::SimpleSet)> = HashMap::new();
+        let mut valid_requests: HashMap<String, (Matcher, EnumSet<broker::Field>)> = HashMap::new();
 
         for entry in &request.entries {
             if entry.path.len() > MAX_REQUEST_PATH_LENGTH {
@@ -506,7 +507,7 @@ impl proto::val_server::Val for broker::DataBroker {
 
             match Matcher::new(&entry.path) {
                 Ok(matcher) => {
-                    let mut fields = broker::SimpleSet::new();
+                    let mut fields = EnumSet::new();
                     for id in &entry.fields {
                         if let Ok(field) = proto::Field::try_from(*id) {
                             match field {
@@ -534,7 +535,7 @@ impl proto::val_server::Val for broker::DataBroker {
             }
         }
 
-        let mut entries: HashMap<i32, broker::SimpleSet> = HashMap::new();
+        let mut entries: HashMap<i32, EnumSet<broker::Field>> = HashMap::new();
 
         if !valid_requests.is_empty() {
             for (path, (matcher, fields)) in valid_requests {
@@ -548,7 +549,7 @@ impl proto::val_server::Val for broker::DataBroker {
                             entries
                                 .entry(entry.metadata().id)
                                 .and_modify(|existing_fields| {
-                                    existing_fields.insertAll(fields);
+                                    existing_fields.insert_all(fields);
                                 })
                                 .or_insert(fields);
 
@@ -574,7 +575,7 @@ impl proto::val_server::Val for broker::DataBroker {
                                         entries
                                             .entry(entry.metadata().id)
                                             .and_modify(|existing_fields| {
-                                                existing_fields.insertAll(fields);
+                                                existing_fields.insert_all(fields);
                                             })
                                             .or_insert(fields);
 
@@ -725,7 +726,7 @@ fn convert_to_proto_stream(
                 fields: update
                     .fields
                     .iter()
-                    .map(|field| proto::Field::from(field) as i32)
+                    .map(|field| proto::Field::from(&field) as i32)
                     .collect(),
             });
         }

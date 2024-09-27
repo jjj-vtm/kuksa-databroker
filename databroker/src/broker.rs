@@ -17,12 +17,12 @@ pub use crate::types;
 use crate::query;
 pub use crate::types::{ChangeType, DataType, DataValue, EntryType};
 
-use tinyset::{Fits64, Set64};
+use enumset::{EnumSet, EnumSetType};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 use std::convert::TryFrom;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
@@ -86,78 +86,12 @@ pub struct Entry {
     pub metadata: Metadata,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, EnumSetType)]
+#[enumset(repr = "u32")]
 pub enum Field {
     Datapoint = 0,
     ActuatorTarget = 1,
     MetadataUnit = 2,
-}
-
-#[derive(Clone, Copy)]
-
-pub struct SimpleSet {
-    repr: u8,
-}
-
-impl SimpleSet {
-    pub fn new() -> Self {
-        Self{repr: 0}
-    }
-
-    pub fn insert(&mut self, value: Field) {
-        match value {
-            Field::Datapoint => {
-                self.repr |= 0b0000_0001;
-            }
-            Field::ActuatorTarget => {
-                self.repr |= 0b0000_0010;
-            }
-            Field::MetadataUnit => {
-                self.repr |= 0b0000_0100; 
-            }
-        }
-    }
-
-    pub fn insertAll(&mut self, value: SimpleSet) {
-            self.repr |= value.repr;
-    }
-
-    pub fn contains(&self, value: &Field) -> bool {
-        match value {
-            Field::Datapoint => {
-                (self.repr & 0b0000_0001) == 0b0000_0001
-            }
-            Field::ActuatorTarget => {
-                (self.repr & 0b0000_0001) == 0b0000_0010
-            }
-            Field::MetadataUnit => {
-                (self.repr & 0b0000_0001) == 0b0000_0100 
-            }
-        }
-    }
-
-    fn is_disjoint(&self, other: &SimpleSet) -> bool {
-        !((self.repr & other.repr) == self.repr)
-    }
-    
-    fn is_empty(&self) -> bool {
-        self.repr == 0
-    }
-}
-
-impl Fits64 for Field {
-    unsafe fn from_u64(x: u64) -> Self {
-        match x {
-            0 => Field::Datapoint,
-            1 => Field::ActuatorTarget,
-            2 => Field::MetadataUnit,
-            _ => Field::Datapoint,
-        }
-    }
-
-    fn to_u64(self) -> u64 {
-        self as u64
-    }
 }
 
 #[derive(Default)]
@@ -187,7 +121,7 @@ pub struct QueryField {
 #[derive(Debug)]
 pub struct ChangeNotification {
     pub update: EntryUpdate,
-    pub fields: HashSet<Field>,
+    pub fields: EnumSet<Field>,
 }
 
 #[derive(Debug, Default)]
@@ -223,7 +157,7 @@ pub struct QuerySubscription {
 }
 
 pub struct ChangeSubscription {
-    entries: HashMap<i32, SimpleSet>,
+    entries: HashMap<i32, EnumSet<Field>>,
     sender: mpsc::Sender<EntryUpdates>,
     permissions: Permissions,
 }
@@ -634,8 +568,8 @@ impl Entry {
         self.lag_datapoint = self.datapoint.clone();
     }
 
-    pub fn apply(&mut self, update: EntryUpdate) -> SimpleSet{
-        let mut changed = SimpleSet { repr: 0};
+    pub fn apply(&mut self, update: EntryUpdate) -> EnumSet<Field>{
+        let mut changed = EnumSet::empty();
         if let Some(datapoint) = update.datapoint {
             self.lag_datapoint = self.datapoint.clone();
             self.datapoint = datapoint;
@@ -675,7 +609,7 @@ impl Subscriptions {
 
     pub async fn notify(
         &self,
-        changed: Option<&HashMap<i32, SimpleSet>>,
+        changed: Option<&HashMap<i32, EnumSet<Field>>>,
         db: &Database,
     ) -> Result<Option<HashMap<String, ()>>, NotificationError> {
         let mut error = None;
@@ -751,7 +685,7 @@ impl Subscriptions {
 impl ChangeSubscription {
     async fn notify(
         &self,
-        changed: Option<&HashMap<i32, SimpleSet>>,
+        changed: Option<&HashMap<i32, EnumSet<Field>>>,
         db: &Database,
     ) -> Result<(), NotificationError> {
         let db_read = db.authorized_read_access(&self.permissions);
@@ -762,21 +696,21 @@ impl ChangeSubscription {
                 for (id, changed_fields) in changed {
                     if let Some(fields) = self.entries.get(id) {
                     
-                        if !fields.is_disjoint(changed_fields) {
+                        if !fields.is_disjoint(*changed_fields) {
                             match db_read.get_entry_by_id(*id) {
                                 Ok(entry) => {
                                     let mut update = EntryUpdate::default();
-                                    let mut notify_fields = HashSet::new();
+                                    let mut notify_fields = EnumSet::empty();
                                     // TODO: Perhaps make path optional
                                     update.path = Some(entry.metadata.path.clone());
-                                    if changed_fields.contains(&Field::Datapoint)
-                                        && fields.contains(&Field::Datapoint)
+                                    if changed_fields.contains(Field::Datapoint)
+                                        && fields.contains(Field::Datapoint)
                                     {
                                         update.datapoint = Some(entry.datapoint.clone());
                                         notify_fields.insert(Field::Datapoint);
                                     }
-                                    if changed_fields.contains(&Field::ActuatorTarget)
-                                        && fields.contains(&Field::ActuatorTarget)
+                                    if changed_fields.contains(Field::ActuatorTarget)
+                                        && fields.contains(Field::ActuatorTarget)
                                     {
                                         update.actuator_target =
                                             Some(entry.actuator_target.clone());
@@ -818,14 +752,14 @@ impl ChangeSubscription {
                     match db_read.get_entry_by_id(*id) {
                         Ok(entry) => {
                             let mut update = EntryUpdate::default();
-                            let mut notify_fields = HashSet::new();
+                            let mut notify_fields = EnumSet::empty();
                             // TODO: Perhaps make path optional
                             update.path = Some(entry.metadata.path.clone());
-                            if fields.contains(&Field::Datapoint) {
+                            if fields.contains(Field::Datapoint) {
                                 update.datapoint = Some(entry.datapoint.clone());
                                 notify_fields.insert(Field::Datapoint);
                             }
-                            if fields.contains(&Field::ActuatorTarget) {
+                            if fields.contains(Field::ActuatorTarget) {
                                 update.actuator_target = Some(entry.actuator_target.clone());
                                 notify_fields.insert(Field::ActuatorTarget);
                             }
@@ -880,7 +814,7 @@ impl QuerySubscription {
     }
     fn check_if_changes_match(
         query: &CompiledQuery,
-        changed_origin: Option<&HashMap<i32, SimpleSet>>,
+        changed_origin: Option<&HashMap<i32, EnumSet<Field>>>,
         db: &DatabaseReadAccess,
     ) -> bool {
         match changed_origin {
@@ -888,7 +822,7 @@ impl QuerySubscription {
                 for (id, fields) in changed {
                     if let Some(metadata) = db.get_metadata_by_id(*id) {
                         if query.input_spec.contains(&metadata.path)
-                            && fields.contains(&Field::Datapoint)
+                            && fields.contains(Field::Datapoint)
                         {
                             return true;
                         }
@@ -930,7 +864,7 @@ impl QuerySubscription {
     }
     fn generate_input(
         &self,
-        changed: Option<&HashMap<i32, SimpleSet>>,
+        changed: Option<&HashMap<i32, EnumSet<Field>>>,
         db: &DatabaseReadAccess,
     ) -> Option<impl ExecutionInput> {
         let id_used_in_query = QuerySubscription::check_if_changes_match(&self.query, changed, db);
@@ -946,7 +880,7 @@ impl QuerySubscription {
 
     async fn notify(
         &self,
-        changed: Option<&HashMap<i32, SimpleSet>>,
+        changed: Option<&HashMap<i32, EnumSet<Field>>>,
         db: &Database,
     ) -> Result<Option<impl query::ExecutionInput>, NotificationError> {
         let db_read = db.authorized_read_access(&self.permissions);
@@ -1099,7 +1033,7 @@ impl<'a, 'b> DatabaseWriteAccess<'a, 'b> {
         &mut self,
         path: &str,
         update: EntryUpdate,
-    ) -> Result<SimpleSet, UpdateError> {
+    ) -> Result<EnumSet<Field>, UpdateError> {
         match self.db.path_to_id.get(path) {
             Some(id) => self.update(*id, update),
             None => Err(UpdateError::NotFound),
@@ -1123,7 +1057,7 @@ impl<'a, 'b> DatabaseWriteAccess<'a, 'b> {
         &mut self,
         id: i32,
         mut update: EntryUpdate,
-    ) -> Result<SimpleSet, UpdateError> {
+    ) -> Result<EnumSet<Field>, UpdateError> {
         match self.db.entries.get_mut(&id) {
             Some(entry) => {
                 if update.path.is_some()
@@ -1456,7 +1390,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
 
         let cleanup_needed = {
             let changed = {
-                let mut changed = HashMap::<i32, SimpleSet>::new();
+                let mut changed = HashMap::<i32, EnumSet<Field>>::new();
                 for (id, update) in updates {
                     debug!("setting id {} to {:?}", id, update);
                     match db_write.update(id, update) {
@@ -1518,7 +1452,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
 
     pub async fn subscribe(
         &self,
-        valid_entries: HashMap<i32, SimpleSet>,
+        valid_entries: HashMap<i32, EnumSet<Field>>,
     ) -> Result<impl Stream<Item = EntryUpdates>, SubscriptionError> {
         if valid_entries.is_empty() {
             return Err(SubscriptionError::InvalidInput);
@@ -3046,7 +2980,7 @@ mod tests {
             .await
             .expect("Register datapoint should succeed");
 
-        let mut fieldWithDP = SimpleSet::new();
+        let mut fieldWithDP = EnumSet::new();
         fieldWithDP.insert(Field::Datapoint);
 
         let mut stream = broker
