@@ -19,6 +19,7 @@ pub use crate::types::{ChangeType, DataType, DataValue, EntryType};
 
 use enumset::{EnumSet, EnumSetType};
 use tokio::sync::{broadcast, mpsc, RwLock};
+
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
 
@@ -609,13 +610,13 @@ impl Subscriptions {
 
     pub async fn notify(
         &self,
-        changed: Option<&HashMap<i32, EnumSet<Field>>>,
+        changed: Option<&Vec<(i32, EnumSet<Field>)>>,
         db: &Database,
     ) -> Result<Option<HashMap<String, ()>>, NotificationError> {
         let mut error = None;
         let mut lag_updates: HashMap<String, ()> = HashMap::new();
         for sub in &self.query_subscriptions {
-            match sub.notify(changed, db).await {
+            match sub.notify(changed, db) {
                 Ok(None) => {}
                 Ok(Some(input)) => {
                     for x in input.get_fields() {
@@ -629,7 +630,7 @@ impl Subscriptions {
         }
 
         for sub in &self.change_subscriptions {
-            match sub.notify(changed, db).await {
+            match sub.notify(changed, db) {
                 Ok(_) => {}
                 Err(err) => error = Some(err),
             }
@@ -683,9 +684,9 @@ impl Subscriptions {
 }
 
 impl ChangeSubscription {
-    async fn notify(
+    fn notify(
         &self,
-        changed: Option<&HashMap<i32, EnumSet<Field>>>,
+        changed: Option<&Vec<(i32, EnumSet<Field>)>>,
         db: &Database,
     ) -> Result<(), NotificationError> {
         let db_read = db.authorized_read_access(&self.permissions);
@@ -739,7 +740,7 @@ impl ChangeSubscription {
             if notifications.updates.is_empty() {
                 Ok(())
             } else {
-                match self.sender.send(notifications).await {
+                match self.sender.try_send(notifications) {
                     Ok(()) => Ok(()),
                     Err(_) => Err(NotificationError {}),
                 }
@@ -775,7 +776,7 @@ impl ChangeSubscription {
                 }
                 notifications
             };
-            match self.sender.send(notifications).await {
+            match self.sender.try_send(notifications) {
                 Ok(()) => Ok(()),
                 Err(_) => Err(NotificationError {}),
             }
@@ -814,7 +815,7 @@ impl QuerySubscription {
     }
     fn check_if_changes_match(
         query: &CompiledQuery,
-        changed_origin: Option<&HashMap<i32, EnumSet<Field>>>,
+        changed_origin: Option<&Vec<(i32, EnumSet<Field>)>>,
         db: &DatabaseReadAccess,
     ) -> bool {
         match changed_origin {
@@ -864,7 +865,7 @@ impl QuerySubscription {
     }
     fn generate_input(
         &self,
-        changed: Option<&HashMap<i32, EnumSet<Field>>>,
+        changed: Option<&Vec<(i32, EnumSet<Field>)>>,
         db: &DatabaseReadAccess,
     ) -> Option<impl ExecutionInput> {
         let id_used_in_query = QuerySubscription::check_if_changes_match(&self.query, changed, db);
@@ -878,9 +879,9 @@ impl QuerySubscription {
         }
     }
 
-    async fn notify(
+    fn notify(
         &self,
-        changed: Option<&HashMap<i32, EnumSet<Field>>>,
+        changed: Option<&Vec<(i32, EnumSet<Field>)>>,
         db: &Database,
     ) -> Result<Option<impl query::ExecutionInput>, NotificationError> {
         let db_read = db.authorized_read_access(&self.permissions);
@@ -893,7 +894,7 @@ impl QuerySubscription {
                     Ok(result) => match result {
                         Some(fields) => match self
                             .sender
-                            .send(QueryResponse {
+                            .try_send(QueryResponse {
                                 fields: fields
                                     .iter()
                                     .map(|e| QueryField {
@@ -902,7 +903,7 @@ impl QuerySubscription {
                                     })
                                     .collect(),
                             })
-                            .await
+                            
                         {
                             Ok(()) => Ok(Some(input)),
                             Err(_) => Err(NotificationError {}),
@@ -1390,13 +1391,14 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
 
         let cleanup_needed = {
             let changed = {
-                let mut changed = HashMap::<i32, EnumSet<Field>>::new();
+                let mut changed: Vec<(i32, EnumSet<Field>)> = Vec::with_capacity(4);
+
                 for (id, update) in updates {
                     debug!("setting id {} to {:?}", id, update);
                     match db_write.update(id, update) {
                         Ok(changed_fields) => {
                             if !changed_fields.is_empty() {
-                                changed.insert(id, changed_fields);
+                                changed.push((id, changed_fields));
                             }
                         }
                         Err(err) => {
@@ -1468,7 +1470,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
         {
             // Send everything subscribed to in an initial notification
             let db = self.broker.database.read().await;
-            if subscription.notify(None, &db).await.is_err() {
+            if subscription.notify(None, &db).is_err() {
                 warn!("Failed to create initial notification");
             }
         }
@@ -1503,7 +1505,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
                 };
 
                 // Send the initial execution of query
-                match subscription.notify(None, &db_read).await {
+                match subscription.notify(None, &db_read) {
                     Ok(_) => self
                         .broker
                         .subscriptions

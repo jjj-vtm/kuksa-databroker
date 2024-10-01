@@ -12,11 +12,10 @@
 ********************************************************************************/
 
 use kuksa::{proto, KuksaClient};
-use tokio::{runtime::Handle, task::futures};
 
 use std::{
     collections::HashMap,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 #[tokio::main]
@@ -25,8 +24,8 @@ async fn main() -> () {
     let path = "Vehicle.Speed";
     let mut clients: Vec<KuksaClient> = vec![];
 
-    for i in 0..parallel {
-        let mut client: KuksaClient =
+    for _ in 0..parallel {
+        let client: KuksaClient =
             KuksaClient::new(kuksa_common::to_uri("127.0.0.1:55556").unwrap());
         clients.push(client);
     }
@@ -41,13 +40,13 @@ async fn main() -> () {
 
     let mut datapoints_list: Vec<HashMap<String, proto::v1::Datapoint>> = vec![];
 
-    for i in 0..parallel {
+    for _ in 0..parallel {
         datapoints_list.push(datapoints.clone());
     }
 
     let mut counters = vec![];
 
-    for i in 0..parallel {
+    for _ in 0..parallel {
         counters.push(0);
     }
 
@@ -57,7 +56,7 @@ async fn main() -> () {
     let mut handles = vec![];
 
 
-    for tr in 0 ..parallel  {
+    for _ in 0 ..parallel  {
         let mut client = clients.pop().unwrap();
         let datapoint = datapoints_list.pop().unwrap();
         let mut cnt = counters.pop().unwrap();
@@ -70,8 +69,6 @@ async fn main() -> () {
                 }
                 cnt  += 1;
                 if cnt > msg_cnt {
-                    println!("Task done");
-
                     break;
                 }
             }
