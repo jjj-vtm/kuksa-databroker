@@ -18,7 +18,8 @@ use crate::query;
 pub use crate::types::{ChangeType, DataType, DataValue, EntryType};
 
 use enumset::{EnumSet, EnumSetType};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc};
+use std::sync::RwLock;
 
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
@@ -608,7 +609,7 @@ impl Subscriptions {
         self.change_subscriptions.push(subscription)
     }
 
-    pub async fn notify(
+    pub fn notify(
         &self,
         changed: Option<&Vec<(i32, EnumSet<Field>)>>,
         db: &Database,
@@ -1239,7 +1240,7 @@ pub struct AuthorizedAccess<'a, 'b> {
 
 impl<'a, 'b> AuthorizedAccess<'a, 'b> {
     #[allow(clippy::too_many_arguments)]
-    pub async fn add_entry(
+    pub fn add_entry(
         &self,
         name: String,
         data_type: DataType,
@@ -1252,7 +1253,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
         self.broker
             .database
             .write()
-            .await
+            .unwrap()
             .authorized_write_access(self.permissions)
             .add(
                 name,
@@ -1266,114 +1267,113 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
             )
     }
 
-    pub async fn with_read_lock<T>(&self, f: impl FnOnce(&DatabaseReadAccess) -> T) -> T {
+    pub fn with_read_lock<T>(&self, f: impl FnOnce(&DatabaseReadAccess) -> T) -> T {
         f(&self
             .broker
             .database
             .read()
-            .await
+            .unwrap()
             .authorized_read_access(self.permissions))
     }
 
-    pub async fn get_id_by_path(&self, name: &str) -> Option<i32> {
+    pub fn get_id_by_path(&self, name: &str) -> Option<i32> {
         self.broker
             .database
             .read()
-            .await
+            .unwrap()
             .authorized_read_access(self.permissions)
             .get_metadata_by_path(name)
             .map(|metadata| metadata.id)
     }
 
-    pub async fn get_datapoint(&self, id: i32) -> Result<Datapoint, ReadError> {
+    pub fn get_datapoint(&self, id: i32) -> Result<Datapoint, ReadError> {
         self.broker
             .database
             .read()
-            .await
+            .unwrap()
             .authorized_read_access(self.permissions)
             .get_entry_by_id(id)
             .map(|entry| entry.datapoint.clone())
     }
 
-    pub async fn get_datapoint_by_path(&self, name: &str) -> Result<Datapoint, ReadError> {
+    pub fn get_datapoint_by_path(&self, name: &str) -> Result<Datapoint, ReadError> {
         self.broker
             .database
             .read()
-            .await
+            .unwrap()
             .authorized_read_access(self.permissions)
             .get_entry_by_path(name)
             .map(|entry| entry.datapoint.clone())
     }
 
-    pub async fn get_metadata(&self, id: i32) -> Option<Metadata> {
+    pub fn get_metadata(&self, id: i32) -> Option<Metadata> {
         self.broker
             .database
             .read()
-            .await
+            .unwrap()
             .authorized_read_access(self.permissions)
             .get_metadata_by_id(id)
             .cloned()
     }
 
-    pub async fn get_metadata_by_path(&self, path: &str) -> Option<Metadata> {
+    pub fn get_metadata_by_path(&self, path: &str) -> Option<Metadata> {
         self.broker
             .database
-            .read()
-            .await
+            .read().unwrap()
             .authorized_read_access(self.permissions)
             .get_metadata_by_path(path)
             .cloned()
     }
 
-    pub async fn get_entry_by_path(&self, path: &str) -> Result<Entry, ReadError> {
+    pub fn get_entry_by_path(&self, path: &str) -> Result<Entry, ReadError> {
         self.broker
             .database
             .read()
-            .await
+            .unwrap()
             .authorized_read_access(self.permissions)
             .get_entry_by_path(path)
             .cloned()
     }
 
-    pub async fn get_entry_by_id(&self, id: i32) -> Result<Entry, ReadError> {
+    pub fn get_entry_by_id(&self, id: i32) -> Result<Entry, ReadError> {
         self.broker
             .database
             .read()
-            .await
+            .unwrap()
             .authorized_read_access(self.permissions)
             .get_entry_by_id(id)
             .cloned()
     }
 
-    pub async fn for_each_entry(&self, f: impl FnMut(EntryReadAccess)) {
+    pub fn for_each_entry(&self, f: impl FnMut(EntryReadAccess)) {
         self.broker
             .database
             .read()
-            .await
+            .unwrap()
             .authorized_read_access(self.permissions)
             .iter_entries()
             .for_each(f)
     }
 
-    pub async fn map_entries<T>(&self, f: impl FnMut(EntryReadAccess) -> T) -> Vec<T> {
+    pub fn map_entries<T>(&self, f: impl FnMut(EntryReadAccess) -> T) -> Vec<T> {
         self.broker
             .database
             .read()
-            .await
+            .unwrap()
             .authorized_read_access(self.permissions)
             .iter_entries()
             .map(f)
             .collect()
     }
 
-    pub async fn filter_map_entries<T>(
+    pub fn filter_map_entries<T>(
         &self,
         f: impl FnMut(EntryReadAccess) -> Option<T>,
     ) -> Vec<T> {
         self.broker
             .database
             .read()
-            .await
+            .unwrap()
             .authorized_read_access(self.permissions)
             .iter_entries()
             .filter_map(f)
@@ -1385,7 +1385,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
         updates: impl IntoIterator<Item = (i32, EntryUpdate)>,
     ) -> Result<(), Vec<(i32, UpdateError)>> {
         let mut errors = Vec::new();
-        let mut db = self.broker.database.write().await;
+        let mut db = self.broker.database.write().unwrap();
         let mut db_write = db.authorized_write_access(self.permissions);
         let mut lag_updates: HashMap<String, ()> = HashMap::new();
 
@@ -1411,16 +1411,16 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
             // Downgrade to reader (to allow other readers) while holding on
             // to a read lock in order to ensure a consistent state while
             // notifying subscribers (no writes in between)
-            let db = db.downgrade();
+            drop(db);
+            let db =  self.broker.database.read().unwrap();
 
             // Notify
             match self
                 .broker
                 .subscriptions
                 .read()
-                .await
+                .unwrap()
                 .notify(Some(&changed), &db)
-                .await
             {
                 Ok(None) => false,
                 Ok(Some(lag_updates_)) => {
@@ -1432,7 +1432,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
         };
 
         if !lag_updates.is_empty() {
-            let mut db = self.broker.database.write().await;
+            let mut db = self.broker.database.write().unwrap();
             let mut db_write = db.authorized_write_access(self.permissions);
             for x in lag_updates {
                 if db_write.update_entry_lag_to_be_equal(x.0.as_str()).is_ok() {}
@@ -1441,7 +1441,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
 
         // Cleanup closed subscriptions
         if cleanup_needed {
-            self.broker.subscriptions.write().await.cleanup();
+            self.broker.subscriptions.write().unwrap().cleanup();
         }
 
         // Return errors if any
@@ -1469,7 +1469,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
 
         {
             // Send everything subscribed to in an initial notification
-            let db = self.broker.database.read().await;
+            let db = self.broker.database.read().unwrap();
             if subscription.notify(None, &db).is_err() {
                 warn!("Failed to create initial notification");
             }
@@ -1478,7 +1478,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
         self.broker
             .subscriptions
             .write()
-            .await
+            .unwrap()
             .add_change_subscription(subscription);
 
         let stream = ReceiverStream::new(receiver);
@@ -1489,7 +1489,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
         &self,
         query: &str,
     ) -> Result<impl Stream<Item = QueryResponse>, QueryError> {
-        let db_read = self.broker.database.read().await;
+        let db_read = self.broker.database.read().unwrap();
         let db_read_access = db_read.authorized_read_access(self.permissions);
 
         let compiled_query = query::compile(query, &db_read_access);
@@ -1510,7 +1510,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
                         .broker
                         .subscriptions
                         .write()
-                        .await
+                        .unwrap()
                         .add_query_subscription(subscription),
                     Err(_) => return Err(QueryError::InternalError),
                 };
@@ -1554,14 +1554,14 @@ impl DataBroker {
             loop {
                 interval.tick().await;
                 // Cleanup dropped subscriptions
-                subscriptions.write().await.cleanup();
+                subscriptions.write().unwrap().cleanup();
             }
         });
     }
 
     pub async fn shutdown(&self) {
         // Drain subscriptions
-        let mut subscriptions = self.subscriptions.write().await;
+        let mut subscriptions = self.subscriptions.write().unwrap();
         subscriptions.clear();
 
         // Signal shutdown
@@ -1605,11 +1605,10 @@ mod tests {
                 Some(DataValue::BoolArray(Vec::from([true]))),
                 Some("kg".to_string()),
             )
-            .await
             .expect("Register datapoint should succeed");
 
         {
-            match broker.get_entry_by_id(id1).await {
+            match broker.get_entry_by_id(id1) {
                 Ok(entry) => {
                     assert_eq!(entry.metadata.id, id1);
                     assert_eq!(entry.metadata.path, "test.datapoint1");
@@ -1637,11 +1636,10 @@ mod tests {
                 None,
                 Some("km".to_string()),
             )
-            .await
             .expect("Register datapoint should succeed");
 
         {
-            match broker.get_entry_by_id(id2).await {
+            match broker.get_entry_by_id(id2) {
                 Ok(entry) => {
                     assert_eq!(entry.metadata.id, id2);
                     assert_eq!(entry.metadata.path, "test.datapoint2");
@@ -1666,7 +1664,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         assert_eq!(id3, id1);
@@ -1687,7 +1684,6 @@ mod tests {
                 Some(DataValue::Int32Array(Vec::from([1, 2, 3, 4]))),
                 None,
             )
-            .await
             .is_ok()
         {
             panic!("Entry should not register successfully");
@@ -1711,7 +1707,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         let id2 = broker
@@ -1724,11 +1719,10 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         // Data point exists with value NotAvailable
-        match broker.get_datapoint(id1).await {
+        match broker.get_datapoint(id1) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.value, DataValue::NotAvailable);
             }
@@ -1737,7 +1731,7 @@ mod tests {
             }
         }
 
-        match broker.get_entry_by_id(id2).await {
+        match broker.get_entry_by_id(id2) {
             Ok(entry) => {
                 assert_eq!(entry.datapoint.value, DataValue::NotAvailable);
                 assert_eq!(entry.actuator_target, None)
@@ -1825,7 +1819,7 @@ mod tests {
             .expect("setting datapoint #2");
 
         // Data point exists with value 100
-        match broker.get_datapoint(id1).await {
+        match broker.get_datapoint(id1) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.value, DataValue::Int32(100));
                 assert_eq!(datapoint.ts, time1);
@@ -1838,7 +1832,7 @@ mod tests {
             }
         }
 
-        match broker.get_entry_by_id(id2).await {
+        match broker.get_entry_by_id(id2) {
             Ok(entry) => match entry.actuator_target {
                 Some(datapoint) => {
                     assert_eq!(datapoint.value, DataValue::Bool(true));
@@ -1872,7 +1866,6 @@ mod tests {
                 Some(DataValue::Int32Array(vec![100])),
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         if broker
@@ -1963,7 +1956,7 @@ mod tests {
             .await
             .expect("setting datapoint #1");
 
-        match broker.get_datapoint(id1).await {
+        match broker.get_datapoint(id1) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.value, DataValue::Int32(1));
                 assert_eq!(datapoint.ts, time1);
@@ -1992,7 +1985,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         let mut stream = broker
@@ -2047,7 +2039,7 @@ mod tests {
         }
 
         // Check that the data point has been stored as well
-        match broker.get_datapoint(id1).await {
+        match broker.get_datapoint(id1) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.value, DataValue::Int32(101));
             }
@@ -2075,7 +2067,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         let mut subscription1 = broker
@@ -2177,7 +2168,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         let mut subscription = broker
@@ -2230,7 +2220,7 @@ mod tests {
             }
         }
 
-        match broker.get_datapoint(id1).await {
+        match broker.get_datapoint(id1) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.value, DataValue::Int32(200));
             }
@@ -2252,7 +2242,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Registration should succeed");
 
         assert_eq!(id1, id2, "Re-registration should result in the same id");
@@ -2289,7 +2278,7 @@ mod tests {
             }
         }
 
-        match broker.get_datapoint(id1).await {
+        match broker.get_datapoint(id1) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.value, DataValue::Int32(102));
             }
@@ -2317,7 +2306,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         let id2 = broker
@@ -2330,7 +2318,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         let mut subscription = broker

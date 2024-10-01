@@ -65,7 +65,6 @@ async fn add_kuksa_attribute(
             None,
             None,
         )
-        .await
     {
         Ok(id) => {
             let ids = [(
@@ -126,7 +125,6 @@ async fn read_metadata_file<'a, 'b>(
                 entry.allowed,
                 entry.unit,
             )
-            .await
         {
             Ok(id) => {
                 if let Some(default) = entry.default {

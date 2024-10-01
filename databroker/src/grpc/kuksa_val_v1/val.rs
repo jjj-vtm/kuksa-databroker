@@ -156,8 +156,7 @@ impl proto::val_server::Val for broker::DataBroker {
                                 debug!("Getting datapoint: {:?}", proto_entry);
                                 entries.push(proto_entry);
                             }
-                        })
-                        .await;
+                        });
 
                     // Not found any matches meaning it could be a branch path request
                     // Only support branches like Vehicle.Cabin.Sunroof but not like **.Sunroof
@@ -199,8 +198,7 @@ impl proto::val_server::Val for broker::DataBroker {
                                         debug!("Getting datapoint: {:?}", proto_entry);
                                         entries.push(proto_entry);
                                     }
-                                })
-                                .await;
+                                });
                         }
                     }
                 }
@@ -279,7 +277,7 @@ impl proto::val_server::Val for broker::DataBroker {
 
         for request in entry_updates {
             match &request.entry {
-                Some(entry) => match broker.get_id_by_path(&entry.path).await {
+                Some(entry) => match broker.get_id_by_path(&entry.path) {
                     Some(id) => match validate_entry_update(&broker, &request, id).await {
                         Ok(result) => updates.push(result),
                         Err(e) => return Err(e),
@@ -309,7 +307,7 @@ impl proto::val_server::Val for broker::DataBroker {
             Err(err) => {
                 debug!("Failed to set datapoint: {:?}", err);
                 for (id, error) in err.into_iter() {
-                    if let Some(metadata) = broker.get_metadata(id).await {
+                    if let Some(metadata) = broker.get_metadata(id) {
                         let path = metadata.path.clone();
                         let data_entry_error = convert_to_data_entry_error(&path, &error);
                         errors.push(data_entry_error);
@@ -368,7 +366,7 @@ impl proto::val_server::Val for broker::DataBroker {
 
                                         for request in entry_updates {
                                             match &request.entry {
-                                                Some(entry) => match broker.get_id_by_path(&entry.path).await {
+                                                Some(entry) => match broker.get_id_by_path(&entry.path) {
                                                     Some(id) => {
                                                         match validate_entry_update(&broker, &request, id).await {
                                                             Ok(result) => {
@@ -417,7 +415,7 @@ impl proto::val_server::Val for broker::DataBroker {
                                             Err(err) => {
                                                 debug!("Failed to set datapoint: {:?}", err);
                                                 for (id, error) in err.into_iter() {
-                                                    if let Some(metadata) = broker.get_metadata(id).await {
+                                                    if let Some(metadata) = broker.get_metadata(id) {
                                                         let path = metadata.path.clone();
                                                         let data_entry_error = convert_to_data_entry_error(&path, &error);
                                                         errors.push(data_entry_error);
@@ -558,8 +556,7 @@ impl proto::val_server::Val for broker::DataBroker {
                                 Err(_) => permission_error = true,
                             }
                         }
-                    })
-                    .await;
+                    });
                 if !requested_path_found {
                     // Not found any matches meaning it could be a branch path request
                     // Only support branches like Vehicle.Cabin.Sunroof but not like **.Sunroof
@@ -584,8 +581,7 @@ impl proto::val_server::Val for broker::DataBroker {
                                             Err(_) => permission_error = true,
                                         }
                                     }
-                                })
-                                .await;
+                                });
                         }
                     }
                     if !requested_path_found {
@@ -642,7 +638,7 @@ async fn validate_entry_update(
     ));
 
     if entry.actuator_target.is_some() {
-        if let Some(metadata) = broker.get_metadata(id).await {
+        if let Some(metadata) = broker.get_metadata(id) {
             if metadata.entry_type != broker::EntryType::Actuator {
                 return Err(tonic::Status::invalid_argument(
                     "Tried to set a target value for a non-actuator. Non-actuators have no target value.".to_string(),

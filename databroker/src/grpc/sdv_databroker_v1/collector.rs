@@ -209,9 +209,7 @@ impl proto::collector_server::Collector for broker::DataBroker {
                             metadata.description,
                             None,
                             None,
-                        )
-                        .await
-                    {
+                        )                    {
                         Ok(id) => results.insert(metadata.name, id),
                         Err(RegistrationError::PermissionDenied) => {
                             // Registration error

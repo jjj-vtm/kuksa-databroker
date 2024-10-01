@@ -51,7 +51,7 @@ impl proto::broker_server::Broker for broker::DataBroker {
             let mut datapoints = HashMap::new();
 
             for name in requested.datapoints {
-                match broker.get_datapoint_by_path(&name).await {
+                match broker.get_datapoint_by_path(&name) {
                     Ok(datapoint) => {
                         datapoints.insert(name, proto::Datapoint::from(&datapoint));
                     }
@@ -107,7 +107,7 @@ impl proto::broker_server::Broker for broker::DataBroker {
         let ids = {
             let mut ids = Vec::new();
             for (path, datapoint) in message.datapoints {
-                match broker.get_metadata_by_path(&path).await {
+                match broker.get_metadata_by_path(&path) {
                     Some(metadata) => {
                         match metadata.entry_type {
                             broker::EntryType::Sensor | broker::EntryType::Attribute => {
@@ -210,7 +210,6 @@ impl proto::broker_server::Broker for broker::DataBroker {
         let list = if request.names.is_empty() {
             broker
                 .map_entries(|entry| proto::Metadata::from(entry.metadata()))
-                .await
         } else {
             broker
                 .with_read_lock(|db| {
@@ -221,7 +220,6 @@ impl proto::broker_server::Broker for broker::DataBroker {
                         .map(proto::Metadata::from)
                         .collect::<Vec<proto::Metadata>>()
                 })
-                .await
         };
         let reply = proto::GetMetadataReply { list };
         Ok(Response::new(reply))
