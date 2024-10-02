@@ -205,7 +205,6 @@ impl DataBrokerWorld {
                         None,
                         None,
                     )
-                    .await
                 {
                     return Err("failed to register metadata for {name}");
                 }

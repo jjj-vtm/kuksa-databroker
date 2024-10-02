@@ -18,13 +18,13 @@ use crate::query;
 pub use crate::types::{ChangeType, DataType, DataValue, EntryType};
 
 use enumset::{EnumSet, EnumSetType};
-use tokio::sync::{broadcast, mpsc};
+use rustc_hash::FxHashMap;
 use std::sync::RwLock;
+use tokio::sync::{broadcast, mpsc};
 
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
 
-use std::collections::{HashMap};
 use std::convert::TryFrom;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
@@ -94,13 +94,24 @@ pub enum Field {
     Datapoint = 0,
     ActuatorTarget = 1,
     MetadataUnit = 2,
+    Unknown = 3,
+}
+
+impl Field {
+    pub fn from_proto_field(field: kuksa::proto::v1::Field) -> Field {
+        match field {
+            kuksa::proto::v1::Field::Value => Field::Datapoint,
+            kuksa::proto::v1::Field::ActuatorTarget => Field::ActuatorTarget,
+            _ => Field::Unknown,
+        }
+    }
 }
 
 #[derive(Default)]
 pub struct Database {
     next_id: AtomicI32,
-    path_to_id: HashMap<String, i32>,
-    entries: HashMap<i32, Entry>,
+    path_to_id: FxHashMap<String, i32>,
+    entries: FxHashMap<i32, Entry>,
 }
 
 #[derive(Default)]
@@ -159,7 +170,7 @@ pub struct QuerySubscription {
 }
 
 pub struct ChangeSubscription {
-    entries: HashMap<i32, EnumSet<Field>>,
+    entries: FxHashMap<i32, EnumSet<Field>>,
     sender: mpsc::Sender<EntryUpdates>,
     permissions: Permissions,
 }
@@ -570,7 +581,7 @@ impl Entry {
         self.lag_datapoint = self.datapoint.clone();
     }
 
-    pub fn apply(&mut self, update: EntryUpdate) -> EnumSet<Field>{
+    pub fn apply(&mut self, update: EntryUpdate) -> EnumSet<Field> {
         let mut changed = EnumSet::empty();
         if let Some(datapoint) = update.datapoint {
             self.lag_datapoint = self.datapoint.clone();
@@ -613,9 +624,9 @@ impl Subscriptions {
         &self,
         changed: Option<&Vec<(i32, EnumSet<Field>)>>,
         db: &Database,
-    ) -> Result<Option<HashMap<String, ()>>, NotificationError> {
+    ) -> Result<Option<FxHashMap<String, ()>>, NotificationError> {
         let mut error = None;
-        let mut lag_updates: HashMap<String, ()> = HashMap::new();
+        let mut lag_updates: FxHashMap<String, ()> = FxHashMap::default();
         for sub in &self.query_subscriptions {
             match sub.notify(changed, db) {
                 Ok(None) => {}
@@ -697,7 +708,6 @@ impl ChangeSubscription {
                 let mut notifications = EntryUpdates::default();
                 for (id, changed_fields) in changed {
                     if let Some(fields) = self.entries.get(id) {
-                    
                         if !fields.is_disjoint(*changed_fields) {
                             match db_read.get_entry_by_id(*id) {
                                 Ok(entry) => {
@@ -893,19 +903,15 @@ impl QuerySubscription {
             {
                 match self.query.execute(&input) {
                     Ok(result) => match result {
-                        Some(fields) => match self
-                            .sender
-                            .try_send(QueryResponse {
-                                fields: fields
-                                    .iter()
-                                    .map(|e| QueryField {
-                                        name: e.0.to_owned(),
-                                        value: e.1.to_owned(),
-                                    })
-                                    .collect(),
-                            })
-                            
-                        {
+                        Some(fields) => match self.sender.try_send(QueryResponse {
+                            fields: fields
+                                .iter()
+                                .map(|e| QueryField {
+                                    name: e.0.to_owned(),
+                                    value: e.1.to_owned(),
+                                })
+                                .collect(),
+                        }) {
                             Ok(()) => Ok(Some(input)),
                             Err(_) => Err(NotificationError {}),
                         },
@@ -1319,7 +1325,8 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
     pub fn get_metadata_by_path(&self, path: &str) -> Option<Metadata> {
         self.broker
             .database
-            .read().unwrap()
+            .read()
+            .unwrap()
             .authorized_read_access(self.permissions)
             .get_metadata_by_path(path)
             .cloned()
@@ -1366,10 +1373,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
             .collect()
     }
 
-    pub fn filter_map_entries<T>(
-        &self,
-        f: impl FnMut(EntryReadAccess) -> Option<T>,
-    ) -> Vec<T> {
+    pub fn filter_map_entries<T>(&self, f: impl FnMut(EntryReadAccess) -> Option<T>) -> Vec<T> {
         self.broker
             .database
             .read()
@@ -1387,7 +1391,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
         let mut errors = Vec::new();
         let mut db = self.broker.database.write().unwrap();
         let mut db_write = db.authorized_write_access(self.permissions);
-        let mut lag_updates: HashMap<String, ()> = HashMap::new();
+        let mut lag_updates: FxHashMap<String, ()> = FxHashMap::default();
 
         let cleanup_needed = {
             let changed = {
@@ -1412,7 +1416,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
             // to a read lock in order to ensure a consistent state while
             // notifying subscribers (no writes in between)
             drop(db);
-            let db =  self.broker.database.read().unwrap();
+            let db = self.broker.database.read().unwrap();
 
             // Notify
             match self
@@ -1454,7 +1458,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
 
     pub async fn subscribe(
         &self,
-        valid_entries: HashMap<i32, EnumSet<Field>>,
+        valid_entries: FxHashMap<i32, EnumSet<Field>>,
     ) -> Result<impl Stream<Item = EntryUpdates>, SubscriptionError> {
         if valid_entries.is_empty() {
             return Err(SubscriptionError::InvalidInput);
@@ -2418,7 +2422,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .unwrap();
 
         let ts = std::time::SystemTime::now();
@@ -2451,7 +2454,7 @@ mod tests {
             }
         }
 
-        match broker.get_datapoint(id).await {
+        match broker.get_datapoint(id) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.ts, ts);
                 assert_eq!(
@@ -2483,7 +2486,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .unwrap();
 
         let ts = std::time::SystemTime::now();
@@ -2521,7 +2523,7 @@ mod tests {
             }
         }
 
-        match broker.get_datapoint(id).await {
+        match broker.get_datapoint(id) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.ts, ts);
                 assert_eq!(
@@ -2563,7 +2565,6 @@ mod tests {
                 ])),
                 None,
             )
-            .await
             .unwrap();
 
         let ts = std::time::SystemTime::now();
@@ -2601,7 +2602,7 @@ mod tests {
             }
         }
 
-        match broker.get_datapoint(id).await {
+        match broker.get_datapoint(id) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.ts, ts);
                 assert_eq!(
@@ -2658,7 +2659,7 @@ mod tests {
             }
         }
 
-        match broker.get_datapoint(id).await {
+        match broker.get_datapoint(id) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.ts, ts);
                 assert_eq!(
@@ -2726,7 +2727,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .unwrap();
 
         let ts = std::time::SystemTime::now();
@@ -2783,7 +2783,7 @@ mod tests {
             panic!("Expected set_datapoints to fail ( with Err() ), instead got: Ok(())",)
         }
 
-        match broker.get_datapoint(id).await {
+        match broker.get_datapoint(id) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.ts, ts);
                 assert_eq!(datapoint.value, DataValue::Int32Array(vec![10, 20, 30, 40]));
@@ -2812,7 +2812,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .unwrap();
 
         let ts = std::time::SystemTime::now();
@@ -2869,7 +2868,7 @@ mod tests {
             panic!("Expected set_datapoints to fail ( with Err() ), instead got: Ok(())",)
         }
 
-        match broker.get_datapoint(id).await {
+        match broker.get_datapoint(id) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.ts, ts);
                 assert_eq!(
@@ -2901,7 +2900,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .unwrap();
 
         let ts = std::time::SystemTime::now();
@@ -2934,7 +2932,7 @@ mod tests {
             }
         }
 
-        match broker.get_datapoint(id).await {
+        match broker.get_datapoint(id) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.ts, ts);
                 assert_eq!(
@@ -2966,14 +2964,15 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
-        let mut fieldWithDP = EnumSet::new();
-        fieldWithDP.insert(Field::Datapoint);
+        let mut field_with_dp = EnumSet::new();
+        field_with_dp.insert(Field::Datapoint);
+        
+
 
         let mut stream = broker
-            .subscribe(HashMap::from([(id1, fieldWithDP)]))
+            .subscribe(FxHashMap::from_iter([(id1, field_with_dp)]))
             .await
             .expect("subscription should succeed");
 
@@ -3035,7 +3034,7 @@ mod tests {
         }
 
         // Check that the data point has been stored as well
-        match broker.get_datapoint(id1).await {
+        match broker.get_datapoint(id1) {
             Ok(datapoint) => {
                 assert_eq!(datapoint.value, DataValue::Int32(101));
             }
@@ -3063,7 +3062,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .unwrap();
         let id2 = broker
             .add_entry(
@@ -3075,13 +3073,12 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .unwrap();
 
         // No permissions
         let permissions = Permissions::builder().build().unwrap();
         let broker = db.authorized_access(&permissions);
-        let metadata = broker.map_entries(|entry| entry.metadata().clone()).await;
+        let metadata = broker.map_entries(|entry| entry.metadata().clone());
         for entry in metadata {
             match entry.path.as_str() {
                 "Vehicle.Test1" => assert_eq!(entry.id, id1),
@@ -3106,7 +3103,6 @@ mod tests {
                 Some(DataValue::Int32Array(Vec::from([1, 2, 3, 4]))),
                 None,
             )
-            .await
             .unwrap_err();
         assert_eq!(error, RegistrationError::ValidationError);
 
@@ -3120,10 +3116,9 @@ mod tests {
                 Some(DataValue::BoolArray(Vec::from([true]))),
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
         {
-            match broker.get_entry_by_id(id).await {
+            match broker.get_entry_by_id(id) {
                 Ok(entry) => {
                     assert_eq!(entry.metadata.id, id);
                     assert_eq!(entry.metadata.path, "Vehicle._kuksa.databroker.GitVersion.Do_you_not_like_smörgåstårta.tschö_mit_ö.東京_Москва_r#true");

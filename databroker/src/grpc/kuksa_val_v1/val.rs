@@ -11,11 +11,10 @@
 * SPDX-License-Identifier: Apache-2.0
 ********************************************************************************/
 
-use std::collections::HashMap;
-use std::collections::HashSet;
+use enumset::EnumSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::iter::FromIterator;
 use std::pin::Pin;
-use enumset::EnumSet;
 use tokio::select;
 use tokio::sync::mpsc;
 
@@ -72,7 +71,7 @@ impl proto::val_server::Val for broker::DataBroker {
              */
             let mut valid_requests: Vec<(
                 Matcher,
-                HashSet<proto::Field>,
+                FxHashSet<proto::Field>,
                 String,
                 bool,
                 Option<ReadError>,
@@ -101,7 +100,7 @@ impl proto::val_server::Val for broker::DataBroker {
                             ))
                         })?;
                         let fields =
-                            HashSet::<proto::Field>::from_iter(request.fields.iter().filter_map(
+                            FxHashSet::<proto::Field>::from_iter(request.fields.iter().filter_map(
                                 |id| proto::Field::try_from(*id).ok(), // Ignore unknown fields for now
                             ));
                         let view_fields = combine_view_and_fields(view, fields);
@@ -123,40 +122,39 @@ impl proto::val_server::Val for broker::DataBroker {
             }
             if !valid_requests.is_empty() {
                 for (matcher, view_fields, _, is_match, op_error) in &mut valid_requests {
-                    broker
-                        .for_each_entry(|entry| {
-                            let mut result_fields: HashSet<proto::Field> = HashSet::new();
-                            let glob_path = &entry.metadata().glob_path;
-                            if matcher.is_match(glob_path) {
-                                // Update the `is_match` to indicate a valid and used request path.
-                                *is_match = true;
-                                if view_fields.contains(&proto::Field::Metadata) {
-                                    result_fields.extend(view_fields.clone());
-                                }
-                                if view_fields.contains(&proto::Field::ActuatorTarget)
-                                    || view_fields.contains(&proto::Field::Value)
-                                {
-                                    match entry.datapoint() {
-                                        Ok(_) => {
-                                            // If the entry's path matches the regex and there is access permission,
-                                            // add the result fields to the current entry.
-                                            result_fields.extend(view_fields.clone());
-                                        }
-                                        Err(error) => {
-                                            //Propagate the error
-                                            *op_error = Some(error);
-                                        }
+                    broker.for_each_entry(|entry| {
+                        let mut result_fields: FxHashSet<proto::Field> = FxHashSet::default();
+                        let glob_path = &entry.metadata().glob_path;
+                        if matcher.is_match(glob_path) {
+                            // Update the `is_match` to indicate a valid and used request path.
+                            *is_match = true;
+                            if view_fields.contains(&proto::Field::Metadata) {
+                                result_fields.extend(view_fields.clone());
+                            }
+                            if view_fields.contains(&proto::Field::ActuatorTarget)
+                                || view_fields.contains(&proto::Field::Value)
+                            {
+                                match entry.datapoint() {
+                                    Ok(_) => {
+                                        // If the entry's path matches the regex and there is access permission,
+                                        // add the result fields to the current entry.
+                                        result_fields.extend(view_fields.clone());
+                                    }
+                                    Err(error) => {
+                                        //Propagate the error
+                                        *op_error = Some(error);
                                     }
                                 }
                             }
-                            // If there are result fields, add them to the entries list.
-                            if !result_fields.is_empty() {
-                                let proto_entry =
-                                    proto_entry_from_entry_and_fields(entry, result_fields);
-                                debug!("Getting datapoint: {:?}", proto_entry);
-                                entries.push(proto_entry);
-                            }
-                        });
+                        }
+                        // If there are result fields, add them to the entries list.
+                        if !result_fields.is_empty() {
+                            let proto_entry =
+                                proto_entry_from_entry_and_fields(entry, result_fields);
+                            debug!("Getting datapoint: {:?}", proto_entry);
+                            entries.push(proto_entry);
+                        }
+                    });
 
                     // Not found any matches meaning it could be a branch path request
                     // Only support branches like Vehicle.Cabin.Sunroof but not like **.Sunroof
@@ -165,40 +163,40 @@ impl proto::val_server::Val for broker::DataBroker {
                         && !(*is_match)
                     {
                         if let Ok(branch_matcher) = Matcher::new(&(matcher.as_string() + "/**")) {
-                            broker
-                                .for_each_entry(|entry| {
-                                    let mut result_fields: HashSet<proto::Field> = HashSet::new();
-                                    let glob_path = &entry.metadata().glob_path;
-                                    if branch_matcher.is_match(glob_path) {
-                                        // Update the `is_match` to indicate a valid and used request path.
-                                        *is_match = true;
-                                        if view_fields.contains(&proto::Field::Metadata) {
-                                            result_fields.extend(view_fields.clone());
-                                        }
-                                        if view_fields.contains(&proto::Field::ActuatorTarget)
-                                            || view_fields.contains(&proto::Field::Value)
-                                        {
-                                            match entry.datapoint() {
-                                                Ok(_) => {
-                                                    // If the entry's path matches the regex and there is access permission,
-                                                    // add the result fields to the current entry.
-                                                    result_fields.extend(view_fields.clone());
-                                                }
-                                                Err(error) => {
-                                                    //Propagate the error
-                                                    *op_error = Some(error);
-                                                }
+                            broker.for_each_entry(|entry| {
+                                let mut result_fields: FxHashSet<proto::Field> =
+                                    FxHashSet::default();
+                                let glob_path = &entry.metadata().glob_path;
+                                if branch_matcher.is_match(glob_path) {
+                                    // Update the `is_match` to indicate a valid and used request path.
+                                    *is_match = true;
+                                    if view_fields.contains(&proto::Field::Metadata) {
+                                        result_fields.extend(view_fields.clone());
+                                    }
+                                    if view_fields.contains(&proto::Field::ActuatorTarget)
+                                        || view_fields.contains(&proto::Field::Value)
+                                    {
+                                        match entry.datapoint() {
+                                            Ok(_) => {
+                                                // If the entry's path matches the regex and there is access permission,
+                                                // add the result fields to the current entry.
+                                                result_fields.extend(view_fields.clone());
+                                            }
+                                            Err(error) => {
+                                                //Propagate the error
+                                                *op_error = Some(error);
                                             }
                                         }
                                     }
-                                    // If there are result fields, add them to the entries list.
-                                    if !result_fields.is_empty() {
-                                        let proto_entry =
-                                            proto_entry_from_entry_and_fields(entry, result_fields);
-                                        debug!("Getting datapoint: {:?}", proto_entry);
-                                        entries.push(proto_entry);
-                                    }
-                                });
+                                }
+                                // If there are result fields, add them to the entries list.
+                                if !result_fields.is_empty() {
+                                    let proto_entry =
+                                        proto_entry_from_entry_and_fields(entry, result_fields);
+                                    debug!("Getting datapoint: {:?}", proto_entry);
+                                    entries.push(proto_entry);
+                                }
+                            });
                         }
                     }
                 }
@@ -492,7 +490,8 @@ impl proto::val_server::Val for broker::DataBroker {
             ));
         }
 
-        let mut valid_requests: HashMap<String, (Matcher, EnumSet<broker::Field>)> = HashMap::new();
+        let mut valid_requests: FxHashMap<String, (Matcher, EnumSet<broker::Field>)> =
+            FxHashMap::default();
 
         for entry in &request.entries {
             if entry.path.len() > MAX_REQUEST_PATH_LENGTH {
@@ -533,30 +532,29 @@ impl proto::val_server::Val for broker::DataBroker {
             }
         }
 
-        let mut entries: HashMap<i32, EnumSet<broker::Field>> = HashMap::new();
+        let mut entries: FxHashMap<i32, EnumSet<broker::Field>> = FxHashMap::default();
 
         if !valid_requests.is_empty() {
             for (path, (matcher, fields)) in valid_requests {
                 let mut requested_path_found = false;
                 let mut permission_error = false;
-                broker
-                    .for_each_entry(|entry| {
-                        let glob_path = &entry.metadata().glob_path;
-                        if matcher.is_match(glob_path) {
-                            requested_path_found = true;
-                            entries
-                                .entry(entry.metadata().id)
-                                .and_modify(|existing_fields| {
-                                    existing_fields.insert_all(fields);
-                                })
-                                .or_insert(fields);
+                broker.for_each_entry(|entry| {
+                    let glob_path = &entry.metadata().glob_path;
+                    if matcher.is_match(glob_path) {
+                        requested_path_found = true;
+                        entries
+                            .entry(entry.metadata().id)
+                            .and_modify(|existing_fields| {
+                                existing_fields.insert_all(fields);
+                            })
+                            .or_insert(fields);
 
-                            match entry.datapoint() {
-                                Ok(_) => {}
-                                Err(_) => permission_error = true,
-                            }
+                        match entry.datapoint() {
+                            Ok(_) => {}
+                            Err(_) => permission_error = true,
                         }
-                    });
+                    }
+                });
                 if !requested_path_found {
                     // Not found any matches meaning it could be a branch path request
                     // Only support branches like Vehicle.Cabin.Sunroof but not like **.Sunroof
@@ -564,24 +562,23 @@ impl proto::val_server::Val for broker::DataBroker {
                         && !matcher.as_string().ends_with("/**")
                     {
                         if let Ok(branch_matcher) = Matcher::new(&(matcher.as_string() + "/**")) {
-                            broker
-                                .for_each_entry(|entry| {
-                                    let glob_path = &entry.metadata().glob_path;
-                                    if branch_matcher.is_match(glob_path) {
-                                        requested_path_found = true;
-                                        entries
-                                            .entry(entry.metadata().id)
-                                            .and_modify(|existing_fields| {
-                                                existing_fields.insert_all(fields);
-                                            })
-                                            .or_insert(fields);
+                            broker.for_each_entry(|entry| {
+                                let glob_path = &entry.metadata().glob_path;
+                                if branch_matcher.is_match(glob_path) {
+                                    requested_path_found = true;
+                                    entries
+                                        .entry(entry.metadata().id)
+                                        .and_modify(|existing_fields| {
+                                            existing_fields.insert_all(fields);
+                                        })
+                                        .or_insert(fields);
 
-                                        match entry.datapoint() {
-                                            Ok(_) => {}
-                                            Err(_) => permission_error = true,
-                                        }
+                                    match entry.datapoint() {
+                                        Ok(_) => {}
+                                        Err(_) => permission_error = true,
                                     }
-                                });
+                                }
+                            });
                         }
                     }
                     if !requested_path_found {
@@ -631,18 +628,22 @@ async fn validate_entry_update(
     request: &EntryUpdate,
     id: i32,
 ) -> Result<(i32, broker::EntryUpdate), Status> {
-    let entry = &request.entry.clone().unwrap();
 
-    let fields = HashSet::<proto::Field>::from_iter(request.fields.iter().filter_map(
-        |id| proto::Field::try_from(*id).ok(), // Ignore unknown fields for now
-    ));
+    let fields: EnumSet<broker::Field> = request
+        .fields
+        .iter()
+        .filter_map(|id| proto::Field::try_from(*id).ok())
+        .map(|f| broker::Field::from_proto_field(f))
+        .collect();
 
-    if entry.actuator_target.is_some() {
-        if let Some(metadata) = broker.get_metadata(id) {
-            if metadata.entry_type != broker::EntryType::Actuator {
-                return Err(tonic::Status::invalid_argument(
-                    "Tried to set a target value for a non-actuator. Non-actuators have no target value.".to_string(),
-                ));
+    if let Some(ent) = &request.entry {
+        if ent.actuator_target.is_some() {
+            if let Some(metadata) = broker.get_metadata(id) {
+                if metadata.entry_type != broker::EntryType::Actuator {
+                    return Err(tonic::Status::invalid_argument(
+                        "Tried to set a target value for a non-actuator. Non-actuators have no target value.".to_string(),
+                    ));
+                }
             }
         }
     }
@@ -733,7 +734,7 @@ fn convert_to_proto_stream(
 
 fn proto_entry_from_entry_and_fields(
     entry: EntryReadAccess,
-    fields: HashSet<proto::Field>,
+    fields: FxHashSet<proto::Field>,
 ) -> proto::DataEntry {
     let path = entry.metadata().path.to_string();
     let value = if fields.contains(&proto::Field::Value) {
@@ -848,8 +849,8 @@ fn proto_entry_from_entry_and_fields(
 fn combine_view_and_fields(
     view: proto::View,
     fields: impl IntoIterator<Item = proto::Field>,
-) -> HashSet<proto::Field> {
-    let mut combined = HashSet::new();
+) -> FxHashSet<proto::Field> {
+    let mut combined = FxHashSet::default();
 
     combined.extend(fields);
 
@@ -889,9 +890,9 @@ fn combine_view_and_fields(
 impl broker::EntryUpdate {
     fn from_proto_entry_and_fields(
         entry: &proto::DataEntry,
-        fields: HashSet<proto::Field>,
+        fields: EnumSet<broker::Field>,
     ) -> Self {
-        let datapoint = if fields.contains(&proto::Field::Value) {
+        let datapoint = if fields.contains(broker::Field::Datapoint) {
             entry
                 .value
                 .as_ref()
@@ -899,7 +900,7 @@ impl broker::EntryUpdate {
         } else {
             None
         };
-        let actuator_target = if fields.contains(&proto::Field::ActuatorTarget) {
+        let actuator_target = if fields.contains(broker::Field::ActuatorTarget) {
             match &entry.actuator_target {
                 Some(datapoint) => Some(Some(broker::Datapoint::from(datapoint.clone()))),
                 None => Some(None),
@@ -941,7 +942,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         let mut req = tonic::Request::new(proto::SetRequest {
@@ -996,7 +996,6 @@ mod tests {
                 None,
                 Some("km/h".to_owned()),
             )
-            .await
             .expect("Register datapoint should succeed");
 
         let streamed_update_request = proto::StreamedUpdateRequest {
@@ -1092,7 +1091,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         authorized_access
@@ -1105,7 +1103,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         let mut wildcard_req = tonic::Request::new(proto::GetRequest {
@@ -1153,7 +1150,6 @@ mod tests {
                 None,
                 None,
             )
-            .await
             .expect("Register datapoint should succeed");
 
         let mut wildcard_req = tonic::Request::new(proto::GetRequest {

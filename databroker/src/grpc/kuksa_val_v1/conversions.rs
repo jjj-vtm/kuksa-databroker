@@ -283,6 +283,7 @@ impl From<&broker::Field> for proto::Field {
             broker::Field::Datapoint => proto::Field::Value,
             broker::Field::ActuatorTarget => proto::Field::ActuatorTarget,
             broker::Field::MetadataUnit => proto::Field::MetadataUnit,
+            broker::Field::Unknown => proto::Field::Unspecified,
         }
     }
 }
