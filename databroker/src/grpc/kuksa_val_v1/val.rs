@@ -633,7 +633,7 @@ async fn validate_entry_update(
         .fields
         .iter()
         .filter_map(|id| proto::Field::try_from(*id).ok())
-        .map(|f| broker::Field::from_proto_field(f))
+        .map(broker::Field::from_proto_field)
         .collect();
 
     if let Some(ent) = &request.entry {
