@@ -155,6 +155,11 @@ pub enum SubscriptionError {
     InternalError,
 }
 
+enum CleanupAction {
+    Needed,
+    NotNeeded,
+}
+
 #[derive(Clone)]
 pub struct DataBroker {
     database: Arc<RwLock<Database>>,
@@ -176,7 +181,11 @@ pub struct ChangeSubscription {
 }
 
 #[derive(Debug)]
-pub struct NotificationError {}
+pub enum NotificationError {
+    QueueFull,
+    ReceiverClosed,
+    PermissionReadError,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct EntryUpdate {
@@ -737,7 +746,7 @@ impl ChangeSubscription {
                                 }
                                 Err(ReadError::PermissionExpired) => {
                                     debug!("notify: token expired, closing subscription channel");
-                                    return Err(NotificationError {});
+                                    return Err(NotificationError::PermissionReadError);
                                 }
                                 Err(_) => {
                                     debug!("notify: could not find entry with id {}", id);
@@ -753,7 +762,12 @@ impl ChangeSubscription {
             } else {
                 match self.sender.try_send(notifications) {
                     Ok(()) => Ok(()),
-                    Err(_) => Err(NotificationError {}),
+                    Err(details) => match details {
+                        mpsc::error::TrySendError::Full(_) => Err(NotificationError::QueueFull),
+                        mpsc::error::TrySendError::Closed(_) => {
+                            Err(NotificationError::ReceiverClosed)
+                        }
+                    },
                 }
             }
         } else {
@@ -789,7 +803,10 @@ impl ChangeSubscription {
             };
             match self.sender.try_send(notifications) {
                 Ok(()) => Ok(()),
-                Err(_) => Err(NotificationError {}),
+                Err(details) => match details {
+                    mpsc::error::TrySendError::Full(_) => Err(NotificationError::QueueFull),
+                    mpsc::error::TrySendError::Closed(_) => Err(NotificationError::ReceiverClosed),
+                },
             }
         }
     }
@@ -913,7 +930,14 @@ impl QuerySubscription {
                                 .collect(),
                         }) {
                             Ok(()) => Ok(Some(input)),
-                            Err(_) => Err(NotificationError {}),
+                            Err(details) => match details {
+                                mpsc::error::TrySendError::Full(_) => {
+                                    Err(NotificationError::QueueFull)
+                                }
+                                mpsc::error::TrySendError::Closed(_) => {
+                                    Err(NotificationError::ReceiverClosed)
+                                }
+                            },
                         },
                         None => Ok(None),
                     },
@@ -1393,7 +1417,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
         let mut db_write = db.authorized_write_access(self.permissions);
         let mut lag_updates: FxHashMap<String, ()> = FxHashMap::default();
 
-        let cleanup_needed = {
+        let post_notify_action = {
             let changed = {
                 let mut changed: Vec<(i32, EnumSet<Field>)> = Vec::with_capacity(4);
 
@@ -1416,6 +1440,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
             // to a read lock in order to ensure a consistent state while
             // notifying subscribers (no writes in between)
             drop(db);
+            // Std. Lock does not have a downgrade which means that a write might have gotten the lock between the drop and the next acquiry
             let db = self.broker.database.read().unwrap();
 
             // Notify
@@ -1426,12 +1451,16 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
                 .unwrap()
                 .notify(Some(&changed), &db)
             {
-                Ok(None) => false,
+                Ok(None) => CleanupAction::NotNeeded,
                 Ok(Some(lag_updates_)) => {
                     lag_updates.clone_from(&lag_updates_);
-                    false
+                    CleanupAction::NotNeeded
                 }
-                Err(_) => true, // Cleanup needed
+                Err(details) => match details {
+                    NotificationError::QueueFull => CleanupAction::NotNeeded,
+                    NotificationError::ReceiverClosed => CleanupAction::Needed,
+                    NotificationError::PermissionReadError => CleanupAction::NotNeeded,
+                },
             }
         };
 
@@ -1444,8 +1473,9 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
         }
 
         // Cleanup closed subscriptions
-        if cleanup_needed {
-            self.broker.subscriptions.write().unwrap().cleanup();
+        match post_notify_action {
+            CleanupAction::Needed => self.broker.subscriptions.write().unwrap().cleanup(),
+            CleanupAction::NotNeeded => {}
         }
 
         // Return errors if any
@@ -2968,8 +2998,6 @@ mod tests {
 
         let mut field_with_dp = EnumSet::new();
         field_with_dp.insert(Field::Datapoint);
-        
-
 
         let mut stream = broker
             .subscribe(FxHashMap::from_iter([(id1, field_with_dp)]))
