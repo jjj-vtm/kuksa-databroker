@@ -13,6 +13,7 @@
 
 use enumset::EnumSet;
 use rustc_hash::{FxHashMap, FxHashSet};
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use std::iter::FromIterator;
 use std::pin::Pin;
 use tokio::select;
@@ -595,7 +596,7 @@ impl proto::val_server::Val for broker::DataBroker {
 
         match broker.subscribe(entries).await {
             Ok(stream) => {
-                let stream = convert_to_proto_stream(stream);
+                let stream = convert_to_proto_stream_res(stream);
                 Ok(tonic::Response::new(Box::pin(stream)))
             }
             Err(SubscriptionError::NotFound) => {
@@ -712,11 +713,18 @@ fn convert_to_data_entry_error(path: &String, error: &broker::UpdateError) -> Da
     }
 }
 
-fn convert_to_proto_stream(
-    input: impl Stream<Item = broker::EntryUpdates>,
+fn convert_to_proto_stream_res(
+    input: impl Stream<Item = Result<broker::EntryUpdates, BroadcastStreamRecvError>>,
 ) -> impl Stream<Item = Result<proto::SubscribeResponse, tonic::Status>> {
-    input.map(move |item| {
+
+    input.map(move |item_res| {
+        
+        if item_res.is_err() {
+            return Err(Status::data_loss("Lagged behind"));
+        }
+
         let mut updates = Vec::new();
+        let item = item_res.unwrap();
         for update in item.updates {
             updates.push(proto::EntryUpdate {
                 entry: Some(proto::DataEntry::from(update.update)),

@@ -21,8 +21,9 @@ use enumset::{EnumSet, EnumSetType};
 use rustc_hash::FxHashMap;
 use std::sync::RwLock;
 use tokio::sync::{broadcast, mpsc};
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_stream::Stream;
 
 use std::convert::TryFrom;
@@ -131,13 +132,13 @@ pub struct QueryField {
     pub value: DataValue,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ChangeNotification {
     pub update: EntryUpdate,
     pub fields: EnumSet<Field>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct EntryUpdates {
     pub updates: Vec<ChangeNotification>,
 }
@@ -176,7 +177,7 @@ pub struct QuerySubscription {
 
 pub struct ChangeSubscription {
     entries: FxHashMap<i32, EnumSet<Field>>,
-    sender: mpsc::Sender<EntryUpdates>,
+    sender: broadcast::Sender<EntryUpdates>,
     permissions: Permissions,
 }
 
@@ -684,7 +685,7 @@ impl Subscriptions {
             }
         });
         self.change_subscriptions.retain(|sub| {
-            if sub.sender.is_closed() {
+            if sub.sender.receiver_count() == 0 {
                 info!("Subscriber gone: removing subscription");
                 false
             } else {
@@ -760,14 +761,10 @@ impl ChangeSubscription {
             if notifications.updates.is_empty() {
                 Ok(())
             } else {
-                match self.sender.try_send(notifications) {
-                    Ok(()) => Ok(()),
-                    Err(details) => match details {
-                        mpsc::error::TrySendError::Full(_) => Err(NotificationError::QueueFull),
-                        mpsc::error::TrySendError::Closed(_) => {
-                            Err(NotificationError::ReceiverClosed)
-                        }
-                    },
+                match self.sender.send(notifications) {
+                    Ok(_) => Ok(()),
+                    // TODO: Error handling, error is returned if no receiver present
+                    Err(_) => Err(NotificationError::ReceiverClosed),
                 }
             }
         } else {
@@ -801,12 +798,10 @@ impl ChangeSubscription {
                 }
                 notifications
             };
-            match self.sender.try_send(notifications) {
-                Ok(()) => Ok(()),
-                Err(details) => match details {
-                    mpsc::error::TrySendError::Full(_) => Err(NotificationError::QueueFull),
-                    mpsc::error::TrySendError::Closed(_) => Err(NotificationError::ReceiverClosed),
-                },
+            match self.sender.send(notifications) {
+                Ok(_) => Ok(()),
+                // TODO: Error handling, error is returned if no receiver present
+                Err(_) => Err(NotificationError::ReceiverClosed),
             }
         }
     }
@@ -1489,12 +1484,13 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
     pub async fn subscribe(
         &self,
         valid_entries: FxHashMap<i32, EnumSet<Field>>,
-    ) -> Result<impl Stream<Item = EntryUpdates>, SubscriptionError> {
+    ) -> Result<impl Stream<Item = Result<EntryUpdates, BroadcastStreamRecvError>>, SubscriptionError>
+    {
         if valid_entries.is_empty() {
             return Err(SubscriptionError::InvalidInput);
         }
 
-        let (sender, receiver) = mpsc::channel(10);
+        let (sender, receiver) = broadcast::channel(10);
         let subscription = ChangeSubscription {
             entries: valid_entries,
             sender,
@@ -1515,7 +1511,7 @@ impl<'a, 'b> AuthorizedAccess<'a, 'b> {
             .unwrap()
             .add_change_subscription(subscription);
 
-        let stream = ReceiverStream::new(receiver);
+        let stream = BroadcastStream::new(receiver);
         Ok(stream)
     }
 
